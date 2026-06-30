@@ -1,0 +1,91 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test-publish:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore GSPLabelPrinter.sln
+
+      - name: Build Release x64
+        run: dotnet build GSPLabelPrinter.sln --configuration Release -p:Platform=x64 --no-restore
+
+      - name: Test Release x64
+        run: dotnet test GSPLabelPrinter.sln --configuration Release -p:Platform=x64 --no-build --logger trx
+
+      - name: Publish win-x64 self-contained
+        shell: pwsh
+        run: .\scripts\publish-win-x64.ps1
+
+      - name: Verify publish structure
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'output/GSPLabelPrinter-win-x64'
+          $required = @(
+            'GSPLabelPrinter.exe',
+            'config.json',
+            'data/employees.csv',
+            'backup',
+            'logs',
+            'wwwroot/index.html',
+            'wwwroot/settings.html',
+            'wwwroot/css/app.css',
+            'wwwroot/js/app.js',
+            'wwwroot/js/settings.js'
+          )
+          foreach ($item in $required) {
+            $path = Join-Path $out $item
+            if (-not (Test-Path $path)) { throw "Missing published item: $item" }
+          }
+
+      - name: Smoke test published app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $PWD 'output/GSPLabelPrinter-win-x64'
+          $exe = Join-Path $out 'GSPLabelPrinter.exe'
+          $env:GSP_LABEL_PRINTER_TEST_MODE = 'true'
+          $env:GSP_LABEL_PRINTER_APP_ROOT = $out
+          $process = Start-Process -FilePath $exe -WorkingDirectory $out -PassThru
+          try {
+            $health = $null
+            for ($i = 0; $i -lt 60; $i++) {
+              try {
+                $health = Invoke-RestMethod -Uri 'http://127.0.0.1:5187/api/health' -TimeoutSec 2
+                break
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if ($null -eq $health -or $health.success -ne $true) { throw 'Health endpoint did not return success.' }
+            $index = Invoke-WebRequest -Uri 'http://127.0.0.1:5187/' -UseBasicParsing
+            if ($index.StatusCode -ne 200 -or $index.Content -notmatch 'Печать именных наклеек') { throw 'Index page smoke test failed.' }
+            foreach ($asset in @('/settings.html','/css/app.css','/js/app.js','/js/settings.js')) {
+              $response = Invoke-WebRequest -Uri "http://127.0.0.1:5187$asset" -UseBasicParsing
+              if ($response.StatusCode -ne 200) { throw "Asset smoke test failed: $asset" }
+            }
+            Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:5187/__test/shutdown' | Out-Null
+            if (-not $process.WaitForExit(10000)) { throw 'Application did not exit after test shutdown.' }
+          }
+          finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            Remove-Item Env:\GSP_LABEL_PRINTER_TEST_MODE -ErrorAction SilentlyContinue
+            Remove-Item Env:\GSP_LABEL_PRINTER_APP_ROOT -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GSPLabelPrinter-win-x64
+          path: output/GSPLabelPrinter-win-x64
