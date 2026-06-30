@@ -24,8 +24,8 @@ public sealed class WindowsPrinterService : IPrinterService
         var defaultPrinter = new PrinterSettings().PrinterName;
         foreach (string name in PrinterSettings.InstalledPrinters)
         {
-            using var settings = new PrinterSettings { PrinterName = name };
-            list.Add(new PrinterInfo(name, string.Equals(name, defaultPrinter, StringComparison.OrdinalIgnoreCase), settings.IsValid, settings.IsValid ? "Доступен" : "Недоступен"));
+            var printerSettings = new PrinterSettings { PrinterName = name };
+            list.Add(new PrinterInfo(name, string.Equals(name, defaultPrinter, StringComparison.OrdinalIgnoreCase), printerSettings.IsValid, printerSettings.IsValid ? "Доступен" : "Недоступен"));
         }
         return list;
     }
@@ -39,9 +39,16 @@ public sealed class WindowsPrinterService : IPrinterService
                 if (string.IsNullOrWhiteSpace(settings.PrinterName)) return Task.FromResult((false, "Выберите принтер в настройках.", "PRINTER_NOT_SELECTED"));
                 if (!PrinterSettings.InstalledPrinters.Cast<string>().Any(p => string.Equals(p, settings.PrinterName, StringComparison.Ordinal))) return Task.FromResult((false, "Выбранный принтер не найден или недоступен.", "PRINTER_NOT_FOUND"));
 
-                using var document = new PrintDocument();
-                document.PrinterSettings.PrinterName = settings.PrinterName;
-                if (!document.PrinterSettings.IsValid) return Task.FromResult((false, "Выбранный принтер не найден или недоступен.", "PRINTER_NOT_FOUND"));
+                var printerSettings = new PrinterSettings
+                {
+                    PrinterName = settings.PrinterName
+                };
+                if (!printerSettings.IsValid) return Task.FromResult((false, "Выбранный принтер не найден или недоступен.", "PRINTER_NOT_FOUND"));
+
+                using var document = new PrintDocument
+                {
+                    PrinterSettings = printerSettings
+                };
 
                 var width = MmToHundredthsInch(settings.LabelWidthMm);
                 var height = MmToHundredthsInch(settings.LabelHeightMm);
@@ -56,15 +63,27 @@ public sealed class WindowsPrinterService : IPrinterService
                     return Task.FromResult((false, "Драйвер принтера не принял размер наклейки 40 × 60 мм. Создайте этот размер бумаги в настройках драйвера принтера и повторите печать.", "CUSTOM_PAPER_SIZE_NOT_SUPPORTED"));
                 }
 
-                document.PrintPage += (_, e) =>
+                PrintPageEventHandler printPageHandler = (_, e) =>
                 {
+                    var graphics = e.Graphics
+                        ?? throw new InvalidOperationException("Не удалось получить графический контекст принтера.");
+
                     _log.Info($"PrintPage: printer={settings.PrinterName}; paper={width}x{height}; orientation={settings.Orientation}; copies={document.PrinterSettings.Copies}; bounds={e.MarginBounds}; employeeHash={TextHasher.Hash(employee.FullName)}");
-                    _layout.Draw(e.Graphics, e.MarginBounds, employee, settings);
+                    _layout.Draw(graphics, e.MarginBounds, employee, settings);
                     e.HasMorePages = false;
                 };
 
+                document.PrintPage += printPageHandler;
+
                 _log.Info($"Попытка печати: printer={settings.PrinterName}; paper={width}x{height}; orientation={settings.Orientation}; copies={document.PrinterSettings.Copies}; employeeHash={TextHasher.Hash(employee.FullName)}");
-                document.Print();
+                try
+                {
+                    document.Print();
+                }
+                finally
+                {
+                    document.PrintPage -= printPageHandler;
+                }
                 _log.Info("Наклейка отправлена на печать");
                 return Task.FromResult((true, "Наклейка отправлена на печать", "OK"));
             }
