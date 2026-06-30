@@ -1,0 +1,5 @@
+{
+  "Server": { "Port": 5187, "OpenBrowserOnStart": true },
+  "Data": { "CsvPath": "data/employees.csv", "BackupDirectory": "backup", "MaximumBackups": 50 },
+  "Printing": { "PrinterName": "", "LabelWidthMm": 40, "LabelHeightMm": 60, "Orientation": "Portrait", "Copies": 1, "ShowPrintDialog": false, "FullNameFontSize": 15, "PositionFontSize": 9, "MarginMm": 3 }
+}
